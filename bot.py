@@ -1,7 +1,9 @@
 import os
 import asyncio
 import sqlite3
+import discord
 from discord.ext import commands
+from tabulate import tabulate
 
 # Database initialization
 # Allow configuring the database location with an environment variable so
@@ -27,7 +29,8 @@ def init_db():
     conn.close()
 
 # Bot setup
-bot = commands.Bot(command_prefix='!')
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
@@ -45,6 +48,22 @@ async def register(ctx, name: str, paid: bool, *, comment: str = None):
     conn.commit()
     conn.close()
     await ctx.send(f"Registered {name} with paid={paid}.")
+
+@bot.command(name='members')
+async def members(ctx):
+    """List all registered members in a table."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT name, paid, COALESCE(comment, "") FROM members')
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send('No members found.')
+        return
+
+    table = tabulate(rows, headers=['Name', 'Paid', 'Comment'], tablefmt='pretty')
+    await ctx.send(f"```\n{table}\n```")
 
 if __name__ == '__main__':
     init_db()
