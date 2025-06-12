@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  bot:
+    build: .
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DATABASE_PATH=/data/duescord.db
+    volumes:
+      - ./data:/data
