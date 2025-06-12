@@ -37,6 +37,9 @@ Use the `!register` command in your server to add a member:
 - `paid`: `True` if dues are paid, `False` otherwise.
 - `comment`: Optional comment about the member.
 
+Use the `!members` command to view a table of all registered members along
+with their paid status and any comments.
+
 Members are stored in the `duescord.db` SQLite database.
 
 ## Running with Docker
