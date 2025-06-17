@@ -41,8 +41,17 @@ Use the `!register` command in your server to add a member:
 You can remove **all** members with the `!clear_table` command, but you
 must confirm the action a second time to prevent accidents.
 
-Use the `!members` command to view a table of all registered members along
-with their paid status and any comments.
+Use the `!members` command to view a table of all registered members. Each
+entry now shows an **ID** which can be used with other commands. Duplicate
+names are rejected on registration.
+
+Additional commands:
+
+- `!update <id> <paid> [comment]` – update a member's paid status or comment.
+- `!delete <id>` – remove a member.
+- `!find <query>` – search names or comments for a keyword.
+- `!unpaid` – list only members who have not paid.
+- `!stats` – show counts of total, paid and unpaid members.
 
 Members are stored in the `duescord.db` SQLite database.
 
