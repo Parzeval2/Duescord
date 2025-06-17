@@ -52,6 +52,8 @@ Additional commands:
 - `!find <query>` – search names or comments for a keyword.
 - `!unpaid` – list only members who have not paid.
 - `!stats` – show counts of total, paid and unpaid members.
+- `!unpay_all` – mark all members as unpaid.
+- `!help` – display a summary of commands.
 
 Members are stored in the `duescord.db` SQLite database.
 
