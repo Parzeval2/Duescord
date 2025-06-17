@@ -90,6 +90,15 @@ async def register(ctx, *, args: str):
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Prevent duplicate names (case-insensitive)
+    c.execute('SELECT id FROM members WHERE lower(name) = lower(?)', (name,))
+    existing = c.fetchall()
+    if existing:
+        ids = ', '.join(str(r[0]) for r in existing)
+        await ctx.send(f"{name} is already registered with id(s): {ids}. Use !update or !delete if needed.")
+        conn.close()
+        return
+
     c.execute(
         'INSERT INTO members (name, paid, comment) VALUES (?, ?, ?)',
         (name, int(paid_val), comment)
@@ -103,7 +112,7 @@ async def members(ctx):
     """List all registered members in a table."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT name, paid, COALESCE(comment, "") FROM members')
+    c.execute('SELECT id, name, paid, COALESCE(comment, "") FROM members')
     rows = c.fetchall()
     conn.close()
 
@@ -111,7 +120,7 @@ async def members(ctx):
         await ctx.send('No members found.')
         return
 
-    table = tabulate(rows, headers=['Name', 'Paid', 'Comment'], tablefmt='pretty')
+    table = tabulate(rows, headers=['ID', 'Name', 'Paid', 'Comment'], tablefmt='pretty')
     await ctx.send(f"```\n{table}\n```")
 
 
@@ -144,6 +153,93 @@ async def clear_table(ctx, confirm: str = None):
     conn.commit()
     conn.close()
     await ctx.send('All members have been removed.')
+
+
+@bot.command(name='delete')
+async def delete_member(ctx, member_id: int):
+    """Remove a single member by their ID."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM members WHERE id = ?', (member_id,))
+    conn.commit()
+    deleted = c.rowcount
+    conn.close()
+    if deleted:
+        await ctx.send(f'Member {member_id} removed.')
+    else:
+        await ctx.send('Member not found.')
+
+
+@bot.command(name='update')
+async def update_member(ctx, member_id: int, paid: str, *, comment: str = None):
+    """Update a member's paid status and optional comment."""
+    paid_val = _parse_bool(paid)
+    if paid_val is None:
+        await ctx.send('Paid value must be true or false')
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if comment is None:
+        c.execute('UPDATE members SET paid = ? WHERE id = ?', (int(paid_val), member_id))
+    else:
+        c.execute('UPDATE members SET paid = ?, comment = ? WHERE id = ?', (int(paid_val), comment, member_id))
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    if updated:
+        await ctx.send(f'Member {member_id} updated.')
+    else:
+        await ctx.send('Member not found.')
+
+
+@bot.command(name='find')
+async def find_member(ctx, *, query: str):
+    """Search for members by name or comment."""
+    like = f'%{query}%'
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'SELECT id, name, paid, COALESCE(comment, "") FROM members '
+        'WHERE name LIKE ? OR comment LIKE ?',
+        (like, like)
+    )
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await ctx.send('No matching members found.')
+        return
+    table = tabulate(rows, headers=['ID', 'Name', 'Paid', 'Comment'], tablefmt='pretty')
+    await ctx.send(f"```\n{table}\n```")
+
+
+@bot.command(name='unpaid')
+async def unpaid_members(ctx):
+    """List only members who have not paid."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, name, COALESCE(comment, "") FROM members WHERE paid = 0')
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await ctx.send('No unpaid members found.')
+        return
+    table = tabulate(rows, headers=['ID', 'Name', 'Comment'], tablefmt='pretty')
+    await ctx.send(f"```\n{table}\n```")
+
+
+@bot.command(name='stats')
+async def stats(ctx):
+    """Show counts of paid and unpaid members."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM members')
+    total = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM members WHERE paid = 1')
+    paid = c.fetchone()[0]
+    unpaid = total - paid
+    conn.close()
+    await ctx.send(f'Total: {total}\nPaid: {paid}\nUnpaid: {unpaid}')
 
 if __name__ == '__main__':
     init_db()
