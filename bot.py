@@ -31,7 +31,7 @@ def init_db():
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Track users who have requested to clear the table but have not yet
 # confirmed. Mapping of user ID to a task that removes the pending state
@@ -240,6 +240,36 @@ async def stats(ctx):
     unpaid = total - paid
     conn.close()
     await ctx.send(f'Total: {total}\nPaid: {paid}\nUnpaid: {unpaid}')
+
+
+@bot.command(name='unpay_all')
+async def unpay_all(ctx):
+    """Mark all members as unpaid."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE members SET paid = 0')
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    await ctx.send(f'Updated {updated} members to unpaid.')
+
+
+@bot.command(name='help')
+async def help_command(ctx):
+    """Show all commands and their usage."""
+    help_text = (
+        "!register <first> [last] <paid> [comment] - Register a member\n"
+        "!members - List all registered members\n"
+        "!clear_table [confirm] - Remove all members\n"
+        "!delete <id> - Remove a member\n"
+        "!update <id> <paid> [comment] - Update a member\n"
+        "!find <query> - Search for members\n"
+        "!unpaid - List unpaid members\n"
+        "!stats - Show member statistics\n"
+        "!unpay_all - Mark all members as unpaid\n"
+        "!help - Show this message"
+    )
+    await ctx.send(help_text)
 
 if __name__ == '__main__':
     init_db()
