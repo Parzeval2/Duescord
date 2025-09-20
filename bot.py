@@ -55,6 +55,24 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 CENTRAL_TZ = ZoneInfo('America/Chicago')
 
+MODERATOR_ROLE_NAME = os.getenv('MODERATOR_ROLE_NAME', 'Moderator')
+
+
+def _has_named_role(member, role_name):
+    return any(role.name == role_name for role in getattr(member, 'roles', []))
+
+
+def moderator_only():
+    async def predicate(ctx):
+        if ctx.guild is None:
+            raise commands.CheckFailure('This command can only be used in a server.')
+        member = ctx.author
+        if _has_named_role(member, MODERATOR_ROLE_NAME) or getattr(member.guild_permissions, 'administrator', False):
+            return True
+        raise commands.MissingRole(MODERATOR_ROLE_NAME)
+    return commands.check(predicate)
+
+
 # Track users who have requested to clear the table but have not yet
 # confirmed. Mapping of user ID to a task that removes the pending state
 # after a timeout.
@@ -83,12 +101,36 @@ def _get_active_tasks():
     return rows
 
 
-def _format_task_table(tasks):
-    formatted = [
-        (task_id, description, f'<@{assignee_id}>')
-        for task_id, description, assignee_id in tasks
-    ]
-    return tabulate(formatted, headers=['ID', 'Description', 'Assignee'], tablefmt='pretty')
+async def _get_screen_name(assignee_id, guild):
+    if guild is not None:
+        member = guild.get_member(assignee_id)
+        if member is not None:
+            return member.display_name
+
+    user = bot.get_user(assignee_id)
+    if user is None:
+        try:
+            user = await bot.fetch_user(assignee_id)
+        except discord.HTTPException:
+            return str(assignee_id)
+    if hasattr(user, 'display_name') and user.display_name:
+        return user.display_name
+    return user.name
+
+
+async def _format_task_message(tasks, destination):
+    guild = getattr(destination, 'guild', None)
+    screen_names = {}
+    lines = []
+    for task_id, description, assignee_id in tasks:
+        if assignee_id not in screen_names:
+            screen_names[assignee_id] = await _get_screen_name(assignee_id, guild)
+        assignee_name = screen_names[assignee_id]
+        description = description.strip()
+        if not description:
+            description = 'No description provided.'
+        lines.append(f'- #{task_id} {assignee_name}\n  {description}')
+    return '\n'.join(lines)
 
 
 def _get_task_channel_id():
@@ -122,8 +164,8 @@ async def _send_active_tasks(destination):
     if not tasks:
         await destination.send('There are no active tasks.')
         return
-    table = _format_task_table(tasks)
-    await destination.send(f"**Active Tasks**\n```\n{table}\n```")
+    message_body = await _format_task_message(tasks, destination)
+    await destination.send(f"**Active Tasks**\n{message_body}")
 
 
 @tasks.loop(time=time(hour=9, tzinfo=CENTRAL_TZ))
@@ -153,6 +195,7 @@ async def on_ready():
 
 
 @bot.command(name='task')
+@moderator_only()
 async def create_task(ctx, member: discord.Member, *, description: str):
     """Create a task assigned to a member."""
     description = description.strip()
@@ -182,12 +225,14 @@ async def create_task_error(ctx, error):
 
 
 @bot.command(name='tasks')
+@moderator_only()
 async def list_tasks(ctx):
     """List all active tasks."""
     await _send_active_tasks(ctx)
 
 
 @bot.command(name='complete', aliases=['complete_task'])
+@moderator_only()
 async def complete(ctx, task_id: int):
     """Mark a task as completed."""
     conn = sqlite3.connect(DB_PATH)
@@ -215,6 +260,7 @@ async def complete_error(ctx, error):
 
 
 @bot.command(name='reopen', aliases=['reopen_task'])
+@moderator_only()
 async def reopen(ctx, task_id: int):
     """Reopen a completed task."""
     conn = sqlite3.connect(DB_PATH)
@@ -242,6 +288,7 @@ async def reopen_error(ctx, error):
 
 
 @bot.command(name='taskchannel', aliases=['set_task_channel'])
+@moderator_only()
 @commands.has_permissions(manage_guild=True)
 async def taskchannel(ctx, channel: discord.TextChannel = None):
     """Set the channel where daily task digests are posted."""
@@ -260,6 +307,7 @@ async def taskchannel_error(ctx, error):
         raise error
 
 @bot.command(name='register')
+@moderator_only()
 async def register(ctx, *, args: str):
     """Register a user with dues status and optional comment.
 
@@ -314,6 +362,7 @@ async def register(ctx, *, args: str):
     await ctx.send(f"Registered {name} with paid={paid_val}.")
 
 @bot.command(name='members')
+@moderator_only()
 async def members(ctx):
     """List all registered members in a table."""
     conn = sqlite3.connect(DB_PATH)
@@ -331,6 +380,7 @@ async def members(ctx):
 
 
 @bot.command(name='clear_table')
+@moderator_only()
 async def clear_table(ctx, confirm: str = None):
     """Delete all members after a second confirmation."""
     user_id = ctx.author.id
@@ -362,6 +412,7 @@ async def clear_table(ctx, confirm: str = None):
 
 
 @bot.command(name='delete')
+@moderator_only()
 async def delete_member(ctx, member_id: int):
     """Remove a single member by their ID."""
     conn = sqlite3.connect(DB_PATH)
@@ -377,6 +428,7 @@ async def delete_member(ctx, member_id: int):
 
 
 @bot.command(name='update')
+@moderator_only()
 async def update_member(ctx, member_id: int, paid: str, *, comment: str = None):
     """Update a member's paid status and optional comment."""
     paid_val = _parse_bool(paid)
@@ -400,6 +452,7 @@ async def update_member(ctx, member_id: int, paid: str, *, comment: str = None):
 
 
 @bot.command(name='find')
+@moderator_only()
 async def find_member(ctx, *, query: str):
     """Search for members by name or comment."""
     like = f'%{query}%'
@@ -420,6 +473,7 @@ async def find_member(ctx, *, query: str):
 
 
 @bot.command(name='unpaid')
+@moderator_only()
 async def unpaid_members(ctx):
     """List only members who have not paid."""
     conn = sqlite3.connect(DB_PATH)
@@ -435,6 +489,7 @@ async def unpaid_members(ctx):
 
 
 @bot.command(name='stats')
+@moderator_only()
 async def stats(ctx):
     """Show counts of paid and unpaid members."""
     conn = sqlite3.connect(DB_PATH)
@@ -449,6 +504,7 @@ async def stats(ctx):
 
 
 @bot.command(name='unpay_all')
+@moderator_only()
 async def unpay_all(ctx):
     """Mark all members as unpaid."""
     conn = sqlite3.connect(DB_PATH)
@@ -464,6 +520,7 @@ async def unpay_all(ctx):
 async def help_command(ctx):
     """Show all commands and their usage."""
     help_text = (
+        "(Moderator role required for commands unless noted)\n"
         "!task @member <description> - Create a task for a member\n"
         "!tasks - List active tasks\n"
         "!complete <id> (alias: !complete_task) - Mark a task complete\n"
