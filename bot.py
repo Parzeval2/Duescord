@@ -1,8 +1,11 @@
 import os
 import asyncio
 import sqlite3
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
+
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from tabulate import tabulate
 
 # Database initialization
@@ -25,6 +28,23 @@ def init_db():
         'comment TEXT'
         ')'
     )
+    c.execute(
+        'CREATE TABLE IF NOT EXISTS tasks ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,'
+        'description TEXT NOT NULL,'
+        'assignee_id INTEGER NOT NULL,'
+        'created_by INTEGER,'
+        'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+        'completed INTEGER NOT NULL DEFAULT 0,'
+        'completed_at TEXT'
+        ')'
+    )
+    c.execute(
+        'CREATE TABLE IF NOT EXISTS settings ('
+        'key TEXT PRIMARY KEY,'
+        'value TEXT NOT NULL'
+        ')'
+    )
     conn.commit()
     conn.close()
 
@@ -32,6 +52,8 @@ def init_db():
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+
+CENTRAL_TZ = ZoneInfo('America/Chicago')
 
 # Track users who have requested to clear the table but have not yet
 # confirmed. Mapping of user ID to a task that removes the pending state
@@ -49,9 +71,193 @@ def _parse_bool(value: str):
     return None
 
 
+def _get_active_tasks():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'SELECT id, description, assignee_id FROM tasks '
+        'WHERE completed = 0 ORDER BY created_at, id'
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def _format_task_table(tasks):
+    formatted = [
+        (task_id, description, f'<@{assignee_id}>')
+        for task_id, description, assignee_id in tasks
+    ]
+    return tabulate(formatted, headers=['ID', 'Description', 'Assignee'], tablefmt='pretty')
+
+
+def _get_task_channel_id():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT value FROM settings WHERE key = ?', ('task_channel_id',))
+    row = c.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_task_channel_id(channel_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'INSERT INTO settings (key, value) VALUES (?, ?) '
+        'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        ('task_channel_id', str(channel_id)),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def _send_active_tasks(destination):
+    tasks = _get_active_tasks()
+    if not tasks:
+        await destination.send('There are no active tasks.')
+        return
+    table = _format_task_table(tasks)
+    await destination.send(f"**Active Tasks**\n```\n{table}\n```")
+
+
+@tasks.loop(time=time(hour=9, tzinfo=CENTRAL_TZ))
+async def daily_task_digest():
+    channel_id = _get_task_channel_id()
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.HTTPException:
+            return
+    await _send_active_tasks(channel)
+
+
+@daily_task_digest.before_loop
+async def before_daily_task_digest():
+    await bot.wait_until_ready()
+
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
+    if not daily_task_digest.is_running():
+        daily_task_digest.start()
+
+
+@bot.command(name='task')
+async def create_task(ctx, member: discord.Member, *, description: str):
+    """Create a task assigned to a member."""
+    description = description.strip()
+    if not description:
+        await ctx.send('Task description cannot be empty.')
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'INSERT INTO tasks (description, assignee_id, created_by, created_at) '
+        'VALUES (?, ?, ?, ?)',
+        (description, member.id, ctx.author.id, datetime.utcnow().isoformat()),
+    )
+    task_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    await ctx.send(f'Task {task_id} created for {member.mention}.')
+
+
+@create_task.error
+async def create_task_error(ctx, error):
+    if isinstance(error, (commands.BadArgument, commands.MissingRequiredArgument)):
+        await ctx.send('Please mention a valid member and provide a description. Usage: `!task @member <description>`')
+    else:
+        raise error
+
+
+@bot.command(name='tasks')
+async def list_tasks(ctx):
+    """List all active tasks."""
+    await _send_active_tasks(ctx)
+
+
+@bot.command(name='complete', aliases=['complete_task'])
+async def complete(ctx, task_id: int):
+    """Mark a task as completed."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'UPDATE tasks SET completed = 1, completed_at = CURRENT_TIMESTAMP '
+        'WHERE id = ? AND completed = 0',
+        (task_id,),
+    )
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    if updated:
+        await ctx.send(f'Task {task_id} marked as complete.')
+    else:
+        await ctx.send('Active task not found with that ID.')
+
+
+@complete.error
+async def complete_error(ctx, error):
+    if isinstance(error, (commands.BadArgument, commands.MissingRequiredArgument)):
+        await ctx.send('Please provide the numeric ID of the task to complete. Usage: `!complete <id>`')
+    else:
+        raise error
+
+
+@bot.command(name='reopen', aliases=['reopen_task'])
+async def reopen(ctx, task_id: int):
+    """Reopen a completed task."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        'UPDATE tasks SET completed = 0, completed_at = NULL '
+        'WHERE id = ? AND completed = 1',
+        (task_id,),
+    )
+    conn.commit()
+    updated = c.rowcount
+    conn.close()
+    if updated:
+        await ctx.send(f'Task {task_id} reopened.')
+    else:
+        await ctx.send('Completed task not found with that ID.')
+
+
+@reopen.error
+async def reopen_error(ctx, error):
+    if isinstance(error, (commands.BadArgument, commands.MissingRequiredArgument)):
+        await ctx.send('Please provide the numeric ID of the task to reopen. Usage: `!reopen <id>`')
+    else:
+        raise error
+
+
+@bot.command(name='taskchannel', aliases=['set_task_channel'])
+@commands.has_permissions(manage_guild=True)
+async def taskchannel(ctx, channel: discord.TextChannel = None):
+    """Set the channel where daily task digests are posted."""
+    channel = channel or ctx.channel
+    _set_task_channel_id(channel.id)
+    await ctx.send(f'Daily task summaries will post in {channel.mention}.')
+
+
+@taskchannel.error
+async def taskchannel_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send('You need the Manage Server permission to set the task channel.')
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send('Please mention a valid text channel.')
+    else:
+        raise error
 
 @bot.command(name='register')
 async def register(ctx, *, args: str):
@@ -258,6 +464,11 @@ async def unpay_all(ctx):
 async def help_command(ctx):
     """Show all commands and their usage."""
     help_text = (
+        "!task @member <description> - Create a task for a member\n"
+        "!tasks - List active tasks\n"
+        "!complete <id> (alias: !complete_task) - Mark a task complete\n"
+        "!reopen <id> (alias: !reopen_task) - Reopen a completed task\n"
+        "!taskchannel [#channel] (alias: !set_task_channel) - Configure the daily task summary channel\n"
         "!register <first> [last] <paid> [comment] - Register a member\n"
         "!members - List all registered members\n"
         "!clear_table [confirm] - Remove all members\n"
