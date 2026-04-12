@@ -93,3 +93,20 @@ DISCORD_TOKEN=YOUR_TOKEN ./start.sh
 ```
 
 The database will be stored in the `data/` directory by default.
+
+## Web interface
+
+Duescord now includes a lightweight web dashboard (enabled by default)
+available at `http://localhost:8080`.
+
+Environment variables:
+
+- `WEB_ENABLED` (default: `true`) – enable/disable the web server.
+- `WEB_HOST` (default: `0.0.0.0`) – host interface to bind.
+- `WEB_PORT` (default: `8080`) – port for the web server.
+- `WEB_SECRET_KEY` – Flask session secret (recommended in production).
+- `WEB_ADMIN_TOKEN` – required to enable the **Admin SQL Browser** tab.
+
+The dashboard includes tabs for Members, Tasks, and an Admin SQL Browser.
+When `WEB_ADMIN_TOKEN` is set, admins can log in through `/admin/login` and
+dynamically browse all SQL tables and rows from the database.
